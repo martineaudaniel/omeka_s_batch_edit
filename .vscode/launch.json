@@ -1,0 +1,61 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    /* ─────────────────────────────────────────────────────────────
+       1. Streamlit • Debug
+       ──────────────────────────────────────────────────────────── */
+    {
+      "name": "Streamlit • Debug",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "streamlit",
+      "args": [
+        "run",
+        "${workspaceFolder}/app.py",
+        "--server.headless=true" // avoids the browser-popup prompt
+      ],
+      "console": "integratedTerminal",
+      "justMyCode": false
+    },
+
+    /* ─────────────────────────────────────────────────────────────
+       2. Streamlit • Run (no debug)
+       ──────────────────────────────────────────────────────────── */
+    {
+      "name": "Streamlit • Run (no debug)",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "streamlit",
+      "args": ["run", "${workspaceFolder}/app.py", "--server.headless=true"],
+      "console": "integratedTerminal",
+      "purpose": ["noDebug"] // VS Code treats this as “Run” button
+    },
+
+    /* ─────────────────────────────────────────────────────────────
+       3. Pytest • Debug / Run
+       ──────────────────────────────────────────────────────────── */
+    {
+      "name": "Pytest • Debug",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "pytest",
+      "args": [
+        "-q", // quiet output; drop it for full verbosity
+        "tests" // path to your test folder (optional)
+      ],
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "justMyCode": false
+    },
+    {
+      "name": "Pytest • Run (no debug)",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "pytest",
+      "args": ["-q", "tests"],
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "purpose": ["noDebug"] // shows up as plain “Run” button
+    }
+  ]
+}

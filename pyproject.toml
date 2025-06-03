@@ -1,0 +1,9 @@
+# pyproject.toml
+[tool.ruff]
+line-length = 150
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["ALL"]
+ignore = ["E501"]
+pydocstyle.convention = "google"
