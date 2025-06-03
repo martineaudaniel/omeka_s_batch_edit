@@ -56,12 +56,6 @@ each layer reusable for a CLI or scheduled job later.
   docstring so that IDE tool-tips are helpful and `pydoclint` stays quiet.
 - **Python 3.12** is required (due to `list[str]`-style type hints).
 
-### Roadmap
-
-- Asynchronous `OmekaClient` for large sites.
-- Unit-test suite (pytest + VCR) for the engine and mutations layers.
-- Import/export of rule sets as CSV/JSON.
-
 ### License
 
 MIT – see `LICENSE`.
