@@ -30,13 +30,35 @@ report = run_recipe(client, recipe, dry_run=False)
 print(report["updated"], report["errors"])
 """
 
+from __future__ import annotations
+
 from dataclasses import dataclass
 from typing import Any
 
 from engine import OmekaClient
 from mutations import apply_ops, diff
 
+# ────────────────────────────────────────────────────────────────────────────
+# Helper
+# ────────────────────────────────────────────────────────────────────────────
 
+
+def _rtype(res: dict[str, Any]) -> str:
+    """Return ``"item"`` or ``"media"`` for an Omeka S resource *res*.
+
+    Priority:
+    1. legacy scalar ``o:type`` (≤ 2.0)
+    2. membership in the ``@type`` list (≥ 2.1)
+    """
+    if "o:type" in res:
+        return res["o:type"]
+    atypes = res.get("@type", [])
+    return "media" if any(t.endswith("Media") for t in atypes) else "item"
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# Data structure
+# ────────────────────────────────────────────────────────────────────────────
 @dataclass
 class Recipe:
     """Encapsulates *what to edit* and *how to edit it* in a batch job.
@@ -88,39 +110,13 @@ class Recipe:
 
     item_set_ids: list[int]
     resource_types: list[str]  # "items", "media"
-    ops: list[dict[str, str]]  # rows from data editor
-    resource_class_id: int | None = None  # filter by class (e.g. Text)
-    exclude_titles: list[str] = None
-    include_media: bool = False  # also touch each item's media
+    ops: list[dict[str, str]]
+    resource_class_id: int | None = None
+    exclude_titles: list[str] | None = None
+    include_media: bool = False
 
     # ---------- selector ---------------------------------------------------- #
     def select_items(self, client: OmekaClient) -> list[dict[str, Any]]:
-        """Collect items that satisfy the recipe's set and filter criteria.
-
-        The method performs three sequential filters:
-
-        1. **Item-set membership** - All items belonging to every ID in
-        :pyattr:`item_set_ids`.
-        2. **Resource class** - If :pyattr:`resource_class_id` is not *None*,
-        keep only items whose ``o:resource_class.o:id`` matches that value.
-        3. **Title blacklist** - If :pyattr:`exclude_titles` is provided, drop
-        items whose first ``dcterms:title`` literal (case-folded, trimmed)
-        appears in the blacklist.
-
-        Args:
-            client (OmekaClient): Authenticated REST client used to fetch items
-                via ``GET /api/items?item_set_id=…``.
-
-        Returns:
-            list[dict[str, Any]]: Items that survive all active filters.  The
-            order is the concatenation of item-set results; no guarantee of
-            uniqueness across overlapping item sets.
-
-        Notes:
-            * Title comparison is *case-insensitive* and ignores leading or
-            trailing whitespace in both the item title and the blacklist
-            entries.
-        """
         items: list[dict[str, Any]] = []
         for set_id in self.item_set_ids:
             items += client.list_items(item_set_id=set_id)
@@ -135,38 +131,14 @@ class Recipe:
         return items
 
     def select(self, client: OmekaClient) -> list[dict[str, Any]]:
-        """Return the resources targeted by this recipe.
-
-        The method first delegates to :meth:`select_items` to obtain the
-        **items** that match the recipe's filters (item-set IDs, resource
-        class, title blacklist).  If ``self.include_media`` is *True*, it then
-        fetches every medium attached to those items, de-duplicates them by
-        ``o:id``, and appends the resulting **media** block to the list.
-
-        Args:
-            client (OmekaClient): Authenticated REST client used to retrieve
-                items and, when requested, their media.
-
-        Returns:
-            list[dict[str, Any]]: A list of Omeka S resource dictionaries.
-            The list always starts with the filtered items; media resources are
-            appended afterwards and each resource appears **at most once**
-            regardless of how many item sets or items reference it.
-
-        Notes:
-            * Media are fetched through the low-level
-            ``GET /api/media?item_id=...`` endpoint exposed by
-            :pyfunc:`OmekaClient._get_all`.
-            * De-duplication is necessary because the same medium may be
-            attached to multiple selected items.
-        """
         resources = self.select_items(client)
 
         if self.include_media:
             media_block: list[dict[str, Any]] = []
             for it in resources:
                 media_block += client._get_all("media", item_id=it["o:id"])
-            # de-duplicate by id
+
+            # De-duplicate by id
             seen = set()
             media_block = [m for m in media_block if not (m["o:id"] in seen or seen.add(m["o:id"]))]
             resources += media_block
@@ -174,75 +146,35 @@ class Recipe:
         return resources
 
 
-# ---------- executor (same as before) --------------------------------------- #
+# ────────────────────────────────────────────────────────────────────────────
+# Executor
+# ────────────────────────────────────────────────────────────────────────────
 def run_recipe(client: OmekaClient, recipe: Recipe, dry_run: bool = True):
-    """Execute a :class:`~recipes.Recipe` against an Omeka S site.
+    """Execute a :class:`Recipe` against an Omeka S site."""
+    report: dict[str, list[dict[str, Any]]] = {"updated": [], "errors": []}
 
-    The function iterates over all resources selected by
-    :pyfunc:`Recipe.select`, applies the recipe’s operation rows with
-    :pyfunc:`engine.apply_ops`, and either **(a)** collects a preview diff
-    (dry-run) or **(b)** sends a ``PATCH`` to the server.
-
-    Args:
-        client (OmekaClient): Authenticated REST client.
-        recipe (Recipe): Description of the batch job—targets plus mutation
-            operations.
-        dry_run (bool, optional): When ``True`` (default) no data are written
-            back; the function returns only a list of prospective changes.
-            When ``False`` each modified resource is patched in place.
-
-    Returns:
-        dict[str, list[dict[str, Any]]]: A report with two keys:
-
-        * ``"updated"`` - In *dry-run* mode: dictionaries containing
-          ``id``, ``type``, ``title``, and ``diff`` for every would-be
-          change.
-          In *write* mode: dictionaries containing only ``id`` for each
-          successfully patched resource.
-        * ``"errors"`` - Dictionaries of the form
-          ``{"id": <int>, "msg": <str>}`` for resources whose PATCH request
-          raised an exception.
-
-    Notes:
-        * Media resources use the same ``/items/{id}`` endpoint in Omeka S
-          ≤ 2.1, so the function detects them via ``o:type == "media"`` and
-          calls :pyfunc:`OmekaClient.patch_item` accordingly.
-        * Exceptions from the HTTP layer are swallowed and recorded under
-          ``"errors"`` to allow the batch to continue processing the
-          remaining resources.
-
-    Example:
-        >>> report = run_recipe(client, recipe, dry_run=True)
-        >>> len(report["updated"]), len(report["errors"])
-        (42, 0)
-    """
-    report = {"updated": [], "errors": []}
     for res in recipe.select(client):
         updated = apply_ops(res, recipe.ops)
         if updated == res:
-            continue
+            continue  # no change → skip
 
         if dry_run:
             report["updated"].append(
                 {
                     "id": res["o:id"],
-                    "type": res["o:type"],
+                    "type": _rtype(res),
                     "title": res.get("dcterms:title", [{}])[0].get("@value", ""),
                     "diff": diff(res, updated),
                 },
             )
             continue
 
+        # ---------- write mode ------------------------------------------------
         try:
-            if res["o:type"] == "media":
-                client.patch_item(
-                    res["o:id"],
-                    updated,
-                )  # same endpoint works for media in Omeka S ≤ 2.1
-            else:
-                client.patch_item(res["o:id"], updated)
+            endpoint = "media" if _rtype(res) == "media" else "items"
+            client.s.patch(f"{client.base}/{endpoint}/{res['o:id']}", json=updated)
             report["updated"].append({"id": res["o:id"]})
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 — keep batch going
             report["errors"].append({"id": res["o:id"], "msg": str(exc)})
 
     return report
